@@ -42,7 +42,7 @@ function get(req) {
 }
 
 function user(session) {
-  return { uid: session.uid, email: session.email, phoneNumber: session.phoneNumber, displayName: session.displayName };
+  return { uid: session.uid, email: session.email, phoneNumber: session.phoneNumber, displayName: session.displayName, ...(session.profile || {}) };
 }
 
 const cleanup = setInterval(() => {

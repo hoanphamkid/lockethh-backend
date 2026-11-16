@@ -152,12 +152,14 @@ function normalizeFriendProfile(body, uid) {
   const firstName = profile.first_name || profile.firstName || '';
   const lastName = profile.last_name || profile.lastName || '';
   const displayName = profile.display_name || profile.displayName || [firstName, lastName].filter(Boolean).join(' ')
-    || profile.username || `Bạn ${uid.slice(0, 6)}`;
+    || profile.username || null;
   return {
     uid,
     displayName,
     username: profile.username || null,
     avatarUrl: profile.profile_picture_url || profile.profilePictureUrl || profile.photo_url || null,
+    // Missing is unknown; explicit null means the badge is hidden.
+    badge: profile.badge === 'locket_gold' || profile.badge === null ? profile.badge : undefined,
   };
 }
 
@@ -179,36 +181,66 @@ async function getProfile(session) {
 }
 
 async function updateProfile(session, updates = {}) {
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) throw failure('Thông tin hồ sơ không hợp lệ.', 400);
   const allowed = ['first_name', 'last_name', 'birthdate'];
   const patch = Object.fromEntries(allowed.filter((key) => typeof updates[key] === 'string' && updates[key].trim()).map((key) => [key, updates[key].trim()]));
+  const changingBadge = Object.hasOwn(updates, 'badge');
+  if (changingBadge) {
+    if (updates.badge !== null && updates.badge !== 'locket_gold') throw failure('Huy hiệu không hợp lệ.', 400);
+    patch.badge = updates.badge;
+  }
   if (!Object.keys(patch).length) throw failure('Thông tin hồ sơ không hợp lệ.', 400);
   const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
   await request('https://api.locketcamera.com/changeProfileInfo', jsonOptions({ data: patch }, { Authorization: `Bearer ${idToken}` }, device), 'cập nhật hồ sơ Locket');
-  return getProfile(session);
+  const profile = await getProfile(session);
+  if (changingBadge && profile.badge !== patch.badge) {
+    throw failure('Locket chưa xác nhận thay đổi huy hiệu. Hãy làm mới hồ sơ trước khi thử lại.', 409);
+  }
+  return profile;
 }
 
 async function getFriends(session) {
   const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
   const url = `https://firestore.googleapis.com/v1/projects/locket-4252a/databases/(default)/documents/users/${encodeURIComponent(session.uid)}/friends?pageSize=300`;
-  const { body } = await request(url, {
-    headers: { ...deviceProfile.headers(device), Authorization: `Bearer ${idToken}` },
-  }, 'đọc danh sách bạn bè');
-  const ids = (body?.documents || []).map((document) => String(document?.name || '').split('/').pop()).filter(Boolean);
+  const documents = await listFirestoreDocuments(url, idToken, device, 'đọc danh sách bạn bè');
+  const ids = [...new Set(documents.map((document) => String(document?.name || '').split('/').pop()).filter(Boolean))];
   const friends = [];
   for (let index = 0; index < ids.length; index += 8) {
     const batch = await Promise.all(ids.slice(index, index + 8).map(async (uid) => {
       try {
         const profileResponse = await request('https://api.locketcamera.com/fetchUserV2', jsonOptions({ data: { user_uid: uid } }, { Authorization: `Bearer ${idToken}` }, device), 'đọc hồ sơ bạn bè');
         return normalizeFriendProfile(profileResponse.body, uid);
-      } catch {
+      } catch (error) {
+        if (error.status === 401) throw error;
         return normalizeFriendProfile({}, uid);
       }
     }));
     friends.push(...batch);
   }
   return friends;
+}
+
+async function listFirestoreDocuments(url, idToken, device, stage) {
+  const documents = [];
+  const seen = new Set();
+  let pageToken = null;
+  do {
+    const pageUrl = new URL(url);
+    if (pageToken) pageUrl.searchParams.set('pageToken', pageToken);
+    const { body } = await request(pageUrl.href, {
+      headers: { ...deviceProfile.headers(device), Authorization: `Bearer ${idToken}` },
+    }, stage);
+    if (!body || (body.documents !== undefined && !Array.isArray(body.documents))) {
+      throw failure(`Locket trả về dữ liệu không hợp lệ khi ${stage}.`);
+    }
+    documents.push(...(body.documents || []));
+    pageToken = body.nextPageToken || null;
+    if (pageToken && seen.has(pageToken)) throw failure(`Không thể tải đầy đủ dữ liệu khi ${stage}. Vui lòng thử lại.`);
+    if (pageToken) seen.add(pageToken);
+  } while (pageToken);
+  return documents;
 }
 
 function firestoreValue(fields, key, fallback = null) {
@@ -233,15 +265,24 @@ function safeHttpsUrl(value) {
 function normalizeMoment(moment = {}) {
   const overlays = Array.isArray(moment.overlays) ? moment.overlays : [];
   const overlayText = overlays.map((overlay) => overlay?.data?.text || overlay?.alt_text).find((value) => typeof value === 'string' && value.trim());
-  const date = moment.date || moment.created_at || moment.createdAt || null;
-  let createdAt = typeof date === 'string' ? date : null;
-  if (date && typeof date === 'object' && Number.isFinite(Number(date._seconds))) createdAt = new Date(Number(date._seconds) * 1000).toISOString();
-  if (!createdAt && Number.isFinite(Number(moment.created_at))) createdAt = new Date(Number(moment.created_at) * 1000).toISOString();
+  const date = moment.date ?? moment.created_at ?? moment.createdAt ?? null;
+  let timestamp = NaN;
+  if (date && typeof date === 'object') {
+    const seconds = date._seconds ?? date.seconds;
+    if (seconds !== null && seconds !== undefined && Number.isFinite(Number(seconds))) timestamp = Number(seconds) * 1000;
+  } else if (typeof date === 'number' || (typeof date === 'string' && /^\d+(\.\d+)?$/.test(date))) {
+    const value = Number(date);
+    timestamp = value < 1e12 ? value * 1000 : value;
+  } else if (typeof date === 'string') timestamp = Date.parse(date);
+  const parsedDate = new Date(timestamp);
+  const createdAt = Number.isNaN(parsedDate.getTime()) ? null : parsedDate.toISOString();
+  const thumbnailUrl = safeHttpsUrl(moment.thumbnail_url) || safeHttpsUrl(moment.thumbnailUrl);
+  const imageUrl = safeHttpsUrl(moment.image_url) || safeHttpsUrl(moment.imageUrl);
   return {
     momentId: moment.canonical_uid || moment.moment_uid || moment.momentId || null,
     userUid: moment.user || moment.user_uid || null,
-    thumbnailUrl: safeHttpsUrl(moment.thumbnail_url || moment.thumbnailUrl || moment.image_url || moment.imageUrl),
-    imageUrl: safeHttpsUrl(moment.image_url || moment.imageUrl || moment.thumbnail_url || moment.thumbnailUrl),
+    thumbnailUrl: thumbnailUrl || imageUrl,
+    imageUrl: imageUrl || thumbnailUrl,
     videoUrl: safeHttpsUrl(moment.video_url || moment.videoUrl),
     caption: typeof moment.caption === 'string' && moment.caption.trim() ? moment.caption : (overlayText || ''),
     createdAt,
@@ -249,33 +290,40 @@ function normalizeMoment(moment = {}) {
   };
 }
 
-async function getMoments(session) {
+async function getMoments(session, { ownOnly = false } = {}) {
   const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
   const endpoint = 'https://api.locketcamera.com/getLatestMomentV2';
   const moments = [];
   const seen = new Set();
   let syncToken = null;
-  // Locket returns a page at a time. Keep following the last moment as sync_token
-  // until the server returns an empty/304 page, so old moments are not silently cut off.
+  // Prefer Locket's returned cursor. Older responses only expose moment IDs.
   for (let page = 0; page < 200; page += 1) {
     const data = { should_count_missed_moments: true, include_group_moments: true };
+    if (ownOnly) data.users = [session.uid];
     if (syncToken) data.sync_token = syncToken;
     const { body } = await request(endpoint, jsonOptions({ data }, { Authorization: `Bearer ${idToken}` }, device), 'đọc kỷ niệm Locket');
-    const raw = body?.result?.data ?? body?.data ?? [];
-    if (!Array.isArray(raw) || !raw.length) break;
+    const raw = body?.result?.data ?? body?.data;
+    if (!Array.isArray(raw)) {
+      if (Number(body?.result?.status) === 304) break;
+      throw failure('Locket trả về dữ liệu kỷ niệm không hợp lệ. Vui lòng thử lại.');
+    }
+    if (!raw.length) break;
     let newCount = 0;
     for (const item of raw) {
       const id = item?.canonical_uid || item?.moment_uid || item?.momentId;
       if (!id || seen.has(id)) continue;
       seen.add(id);
       const moment = normalizeMoment(item);
-      if (moment.momentId && (moment.thumbnailUrl || moment.videoUrl)) moments.push(moment);
+      if (moment.momentId && (moment.thumbnailUrl || moment.videoUrl) && (!ownOnly || moment.userUid === session.uid)) moments.push(moment);
       newCount += 1;
     }
     if (newCount === 0 || Number(body?.result?.status) === 304) break;
-    syncToken = raw[raw.length - 1]?.canonical_uid || raw[raw.length - 1]?.moment_uid || null;
-    if (!syncToken) break;
+    const nextToken = body?.result?.sync_token || body?.sync_token
+      || raw[raw.length - 1]?.canonical_uid || raw[raw.length - 1]?.moment_uid || raw[raw.length - 1]?.momentId;
+    if (typeof nextToken !== 'string' || !nextToken || nextToken === syncToken) break;
+    syncToken = nextToken;
+    if (page === 199) throw failure('Chưa tải hết kỷ niệm từ Locket. Vui lòng thử lại.');
   }
   return moments.sort((left, right) => {
     const leftTime = Date.parse(left.createdAt || '') || 0;
@@ -288,8 +336,7 @@ async function getConversations(session) {
   const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
   const url = `https://firestore.googleapis.com/v1/projects/locket-4252a/databases/(default)/documents/users/${encodeURIComponent(session.uid)}/conversations?pageSize=100`;
-  const { body } = await request(url, { headers: { ...deviceProfile.headers(device), Authorization: `Bearer ${idToken}` } }, 'đọc tin nhắn Locket');
-  const docs = Array.isArray(body?.documents) ? body.documents : [];
+  const docs = await listFirestoreDocuments(url, idToken, device, 'đọc tin nhắn Locket');
   const conversations = docs.map((document) => {
     const fields = document?.fields || {};
     const members = fields.members?.arrayValue?.values?.map((entry) => entry.stringValue).filter(Boolean) || [];
@@ -317,8 +364,8 @@ async function getMessages(session, conversationId) {
   const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
   const url = `https://firestore.googleapis.com/v1/projects/locket-4252a/databases/(default)/documents/conversations/${encodeURIComponent(conversationId)}/messages?pageSize=100`;
-  const { body } = await request(url, { headers: { ...deviceProfile.headers(device), Authorization: `Bearer ${idToken}` } }, 'đọc nội dung tin nhắn');
-  return (body?.documents || []).map((document) => {
+  const documents = await listFirestoreDocuments(url, idToken, device, 'đọc nội dung tin nhắn');
+  return documents.map((document) => {
     const fields = document?.fields || {};
     const senderUid = firestoreValue(fields, 'sender', '');
     return {

@@ -21,8 +21,8 @@ router.post('/', requireLocket, rateLimit({
   const image = req.files?.image?.[0];
   const video = req.files?.video?.[0];
   if (!image && !video) return res.status(400).json({ success: false, message: 'Hãy chọn ảnh hoặc video để đăng.' });
-  if (image && image.size > 5 * 1024 * 1024) return res.status(400).json({ success: false, message: 'Ảnh không được vượt quá 5 MB.' });
-  if (video && video.size > 10 * 1024 * 1024) return res.status(400).json({ success: false, message: 'Video không được vượt quá 10 MB để đăng lên Locket.' });
+  if (image && image.size > 5 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Ảnh vượt dung lượng cho phép. Vui lòng chọn ảnh tối đa 5 MB.' });
+  if (video && video.size > 10 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Video vượt dung lượng cho phép. Vui lòng chọn video tối đa 10 MB.' });
   if (video && !image) return res.status(400).json({ success: false, message: 'Video cần một ảnh xem trước. Hãy chọn lại video từ album.' });
   const caption = req.body.caption ?? '';
   if (typeof caption !== 'string' || caption.length > 120) {

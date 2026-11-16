@@ -13,6 +13,7 @@ router.get('/session', (req, res) => {
 router.get('/profile', requireLocket, async (req, res, next) => {
   try {
     const profile = await locket.getProfile(req.locketSession);
+    req.locketSession.profile = profile;
     res.json({ success: true, data: profile });
   } catch (error) { next(error); }
 });
@@ -22,6 +23,7 @@ router.patch('/profile', requireLocket, async (req, res, next) => {
     const body = req.body || {};
     if (JSON.stringify(body).length > 2000) return res.status(400).json({ success: false, message: 'Thông tin hồ sơ quá dài.' });
     const data = await locket.updateProfile(req.locketSession, body);
+    req.locketSession.profile = data;
     res.json({ success: true, data });
   } catch (error) { next(error); }
 });
