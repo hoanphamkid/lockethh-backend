@@ -19,8 +19,12 @@ function sessionId(req) {
   return cookie?.slice(COOKIE.length + 1);
 }
 
-function remove(req, res) {
+function invalidate(req) {
   sessions.delete(sessionId(req));
+}
+
+function remove(req, res) {
+  invalidate(req);
   res.clearCookie(COOKIE, { ...cookieOptions, maxAge: undefined });
 }
 
@@ -50,4 +54,4 @@ const cleanup = setInterval(() => {
 }, 60000);
 cleanup.unref();
 
-module.exports = { create, get, remove, user };
+module.exports = { create, get, remove, invalidate, user };

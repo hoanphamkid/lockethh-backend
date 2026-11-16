@@ -14,9 +14,12 @@ module.exports = {
       return res.status(tooLarge ? 413 : 400).json({ success: false, message: tooLarge ? sizeMessage : 'Yêu cầu không hợp lệ. Chỉ gửi một ảnh, một video và chú thích tối đa 120 ký tự.' });
     }
     const status = err.status || 500;
-    if (status === 401 && req.locketSession) sessions.remove(req, res);
+    const requiresLogin = err.code === 'SESSION_EXPIRED';
+    // A late response for an old login must not erase a newer browser cookie.
+    // Revoke the old server session; explicit logout handles clearing cookies.
+    if (requiresLogin && req.locketSession) sessions.invalidate(req);
     // Do not log request bodies, cookies, credentials or upstream responses.
     if (status >= 500) console.error(`Request failed: ${req.method} ${req.path} (${status})`);
-    res.status(status).json({ success: false, message: status === 500 ? 'Máy chủ gặp lỗi. Vui lòng thử lại.' : err.message });
+    res.status(status).json({ success: false, ...(err.code ? { code: err.code } : {}), requiresLogin, message: status === 500 ? 'Máy chủ gặp lỗi. Vui lòng thử lại.' : err.message });
   }
 };

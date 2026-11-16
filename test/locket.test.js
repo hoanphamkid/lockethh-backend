@@ -310,7 +310,7 @@ test('an HTTP 200 without a moment ID never counts as a published image', async 
 
 test('Locket errors inside HTTP 200 fail the upload', async (t) => {
   mockUpload(t, { result: { status: 403, errors: ['Permission denied'] } });
-  await assert.rejects(locket.upload(credentials(), await image()), { status: 502 });
+  await assert.rejects(locket.upload(credentials(), await image()), { status: 403, code: 'LOCKET_PERMISSION_DENIED' });
 });
 
 test('App Check refusals are reported without attempting a bypass', async (t) => {
@@ -402,7 +402,7 @@ test('a top-level HTTP 403 response cannot become a successful moment', async (t
   global.fetch = (url, options) => String(url).includes('postMomentV2')
     ? Promise.resolve(json({ error: { status: 'PERMISSION_DENIED', message: 'Denied' } }, 403))
     : uploadFetch(url, options);
-  await assert.rejects(locket.upload(credentials(), await image()), { status: 502 });
+  await assert.rejects(locket.upload(credentials(), await image()), { status: 403, code: 'LOCKET_PERMISSION_DENIED' });
 });
 
 test('client metadata remains stable within a session and separate across accounts', async (t) => {
@@ -420,7 +420,7 @@ test('client metadata remains stable within a session and separate across accoun
 
 test('malformed inner error values still reject cleanly', async (t) => {
   mockUpload(t, { result: { status: 403, errors: 'App Check required' } });
-  await assert.rejects(locket.upload(credentials(), await image()), { status: 502, message: 'Locket yêu cầu xác minh ứng dụng (App Check). Chưa thể đăng ảnh từ web.' });
+  await assert.rejects(locket.upload(credentials(), await image()), { status: 502, code: 'LOCKET_APP_CHECK_REQUIRED', message: 'Locket yêu cầu xác minh ứng dụng (App Check). Chưa thể thực hiện yêu cầu này từ web.' });
 });
 
 test('HTTP routes enforce real sessions, protect credentials, upload multipart and invalidate logout', async (t) => {

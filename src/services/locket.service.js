@@ -11,8 +11,8 @@ const ffmpegPath = require('ffmpeg-static');
 const API_KEY = process.env.LOCKET_FIREBASE_API_KEY || 'AIzaSyCQngaaXQIfJaH0aS2l7REgIjD7nL431So';
 const BUCKET = process.env.LOCKET_STORAGE_BUCKET || 'locket-img';
 
-function failure(message, status = 502) {
-  return Object.assign(new Error(message), { status });
+function failure(message, status = 502, code) {
+  return Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
 }
 
 function convertWebmToMp4(video) {
@@ -36,20 +36,28 @@ function upstreamError(response, body, stage) {
     ...(Array.isArray(errors) ? errors : [errors]),
   ].filter((value) => typeof value === 'string').join(' ');
   if (/INVALID_PASSWORD|EMAIL_NOT_FOUND|INVALID_LOGIN_CREDENTIALS/.test(code)) {
-    return failure('Thông tin đăng nhập Locket không đúng.', 401);
+    return failure('Thông tin đăng nhập Locket không đúng.', 401, 'INVALID_CREDENTIALS');
   }
   if (/TOO_MANY_ATTEMPTS/.test(code) || response.status === 429) {
     return failure('Có quá nhiều yêu cầu. Vui lòng đợi một lát rồi thử lại.', 429);
   }
-  if (/USER_DISABLED/.test(code)) return failure('Tài khoản Locket đã bị vô hiệu hóa.', 401);
+  if (/USER_DISABLED/.test(code)) return failure('Tài khoản Locket đã bị vô hiệu hóa.', 401, 'SESSION_EXPIRED');
   if (/APP.?CHECK|attestation/i.test(code)) {
-    return failure('Locket yêu cầu xác minh ứng dụng (App Check). Chưa thể đăng ảnh từ web.');
+    return failure('Locket yêu cầu xác minh ứng dụng (App Check). Chưa thể thực hiện yêu cầu này từ web.', 502, 'LOCKET_APP_CHECK_REQUIRED');
+  }
+  // Locket also uses inner status 401 when a particular profile/moment is private.
+  // A resource permission error must never invalidate the authenticated session.
+  if (/PERMISSION_DENIED|permission denied|insufficient permissions|(?:do(?:es)?\s*n[o']?t|don.t|doesn.t|not|no)\s+(?:have\s+)?access|not (?:a )?friend/i.test(code)) {
+    return failure(`Locket không cho phép ${stage}. Tài khoản vẫn được kết nối.`, 403, 'LOCKET_PERMISSION_DENIED');
   }
   if (stage === 'đăng nhập' && body?.result && response.status === 400) {
-    return failure('Số điện thoại hoặc mật khẩu Locket không đúng.', 401);
+    return failure('Số điện thoại hoặc mật khẩu Locket không đúng.', 401, 'INVALID_CREDENTIALS');
   }
-  if (response.status === 401 || /TOKEN_EXPIRED|INVALID_ID_TOKEN|INVALID_REFRESH_TOKEN|USER_NOT_FOUND|UNAUTHENTICATED/.test(code)) {
-    return failure('Phiên Locket đã hết hạn. Hãy đăng nhập lại.', 401);
+  if (/USER_NOT_FOUND/.test(code) && !['đăng nhập', 'làm mới phiên', 'đọc tài khoản'].includes(stage)) {
+    return failure(`Không tìm thấy dữ liệu Locket khi ${stage}.`, 404, 'LOCKET_RESOURCE_NOT_FOUND');
+  }
+  if (/TOKEN_EXPIRED|ID_TOKEN_EXPIRED|INVALID_ID_TOKEN|INVALID_REFRESH_TOKEN|USER_NOT_FOUND|UNAUTHENTICATED|Please sign in|not authenticated/i.test(code)) {
+    return failure('Phiên Locket đã hết hạn. Hãy đăng nhập lại.', 401, 'SESSION_EXPIRED');
   }
   return failure(`Locket từ chối ${stage} (HTTP ${response.status}). Vui lòng thử lại hoặc dùng ứng dụng Locket.`);
 }
@@ -132,7 +140,7 @@ async function getAccessToken(session) {
         }, 'làm mới phiên',
       );
       if (!body?.id_token || !body.refresh_token || body.user_id !== session.uid || !Number.isFinite(Number(body.expires_in)) || Number(body.expires_in) <= 0) {
-        throw failure('Phiên Locket không hợp lệ. Hãy đăng nhập lại.', 401);
+        throw failure('Phiên Locket không hợp lệ. Hãy đăng nhập lại.', 401, 'SESSION_EXPIRED');
       }
       session.idToken = body.id_token;
       session.refreshToken = body.refresh_token;
@@ -141,6 +149,20 @@ async function getAccessToken(session) {
     })().finally(() => { delete session.refreshing; });
   }
   return session.refreshing;
+}
+
+async function readLocket(session, url, optionsForToken, stage) {
+  let token = await getAccessToken(session);
+  try {
+    return await request(url, optionsForToken(token), stage);
+  } catch (error) {
+    if (error.code !== 'SESSION_EXPIRED') throw error;
+    // Refresh once for rejected reads, including expiry before the local clock.
+    // Never retry writes such as posting a moment or updating a profile.
+    if (session.idToken === token) session.tokenExpiresAt = 0;
+    token = await getAccessToken(session);
+    return request(url, optionsForToken(token), stage);
+  }
 }
 
 function unwrapResult(body) {
@@ -164,9 +186,8 @@ function normalizeFriendProfile(body, uid) {
 }
 
 async function getProfile(session) {
-  const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
-  const profileResponse = await request('https://api.locketcamera.com/fetchUserV2', jsonOptions({ data: { user_uid: session.uid } }, { Authorization: `Bearer ${idToken}` }, device), 'đọc hồ sơ tài khoản');
+  const profileResponse = await readLocket(session, 'https://api.locketcamera.com/fetchUserV2', (idToken) => jsonOptions({ data: { user_uid: session.uid } }, { Authorization: `Bearer ${idToken}` }, device), 'đọc hồ sơ tài khoản');
   const profile = unwrapResult(profileResponse.body);
   const normalized = normalizeFriendProfile(profileResponse.body, session.uid);
   return {
@@ -201,16 +222,15 @@ async function updateProfile(session, updates = {}) {
 }
 
 async function getFriends(session) {
-  const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
   const url = `https://firestore.googleapis.com/v1/projects/locket-4252a/databases/(default)/documents/users/${encodeURIComponent(session.uid)}/friends?pageSize=300`;
-  const documents = await listFirestoreDocuments(url, idToken, device, 'đọc danh sách bạn bè');
+  const documents = await listFirestoreDocuments(session, url, 'đọc danh sách bạn bè');
   const ids = [...new Set(documents.map((document) => String(document?.name || '').split('/').pop()).filter(Boolean))];
   const friends = [];
   for (let index = 0; index < ids.length; index += 8) {
     const batch = await Promise.all(ids.slice(index, index + 8).map(async (uid) => {
       try {
-        const profileResponse = await request('https://api.locketcamera.com/fetchUserV2', jsonOptions({ data: { user_uid: uid } }, { Authorization: `Bearer ${idToken}` }, device), 'đọc hồ sơ bạn bè');
+        const profileResponse = await readLocket(session, 'https://api.locketcamera.com/fetchUserV2', (idToken) => jsonOptions({ data: { user_uid: uid } }, { Authorization: `Bearer ${idToken}` }, device), 'đọc hồ sơ bạn bè');
         return normalizeFriendProfile(profileResponse.body, uid);
       } catch (error) {
         if (error.status === 401) throw error;
@@ -222,16 +242,17 @@ async function getFriends(session) {
   return friends;
 }
 
-async function listFirestoreDocuments(url, idToken, device, stage) {
+async function listFirestoreDocuments(session, url, stage) {
+  const device = deviceProfile.getDevice(session);
   const documents = [];
   const seen = new Set();
   let pageToken = null;
   do {
     const pageUrl = new URL(url);
     if (pageToken) pageUrl.searchParams.set('pageToken', pageToken);
-    const { body } = await request(pageUrl.href, {
+    const { body } = await readLocket(session, pageUrl.href, (idToken) => ({
       headers: { ...deviceProfile.headers(device), Authorization: `Bearer ${idToken}` },
-    }, stage);
+    }), stage);
     if (!body || (body.documents !== undefined && !Array.isArray(body.documents))) {
       throw failure(`Locket trả về dữ liệu không hợp lệ khi ${stage}.`);
     }
@@ -291,7 +312,6 @@ function normalizeMoment(moment = {}) {
 }
 
 async function getMoments(session, { ownOnly = false } = {}) {
-  const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);
   const endpoint = 'https://api.locketcamera.com/getLatestMomentV2';
   const moments = [];
@@ -302,7 +322,7 @@ async function getMoments(session, { ownOnly = false } = {}) {
     const data = { should_count_missed_moments: true, include_group_moments: true };
     if (ownOnly) data.users = [session.uid];
     if (syncToken) data.sync_token = syncToken;
-    const { body } = await request(endpoint, jsonOptions({ data }, { Authorization: `Bearer ${idToken}` }, device), 'đọc kỷ niệm Locket');
+    const { body } = await readLocket(session, endpoint, (idToken) => jsonOptions({ data }, { Authorization: `Bearer ${idToken}` }, device), 'đọc kỷ niệm Locket');
     const raw = body?.result?.data ?? body?.data;
     if (!Array.isArray(raw)) {
       if (Number(body?.result?.status) === 304) break;
@@ -333,10 +353,8 @@ async function getMoments(session, { ownOnly = false } = {}) {
 }
 
 async function getConversations(session) {
-  const idToken = await getAccessToken(session);
-  const device = deviceProfile.getDevice(session);
   const url = `https://firestore.googleapis.com/v1/projects/locket-4252a/databases/(default)/documents/users/${encodeURIComponent(session.uid)}/conversations?pageSize=100`;
-  const docs = await listFirestoreDocuments(url, idToken, device, 'đọc tin nhắn Locket');
+  const docs = await listFirestoreDocuments(session, url, 'đọc tin nhắn Locket');
   const conversations = docs.map((document) => {
     const fields = document?.fields || {};
     const members = fields.members?.arrayValue?.values?.map((entry) => entry.stringValue).filter(Boolean) || [];
@@ -361,10 +379,8 @@ async function getConversations(session) {
 
 async function getMessages(session, conversationId) {
   if (typeof conversationId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(conversationId)) throw failure('Cuộc trò chuyện không hợp lệ.', 400);
-  const idToken = await getAccessToken(session);
-  const device = deviceProfile.getDevice(session);
   const url = `https://firestore.googleapis.com/v1/projects/locket-4252a/databases/(default)/documents/conversations/${encodeURIComponent(conversationId)}/messages?pageSize=100`;
-  const documents = await listFirestoreDocuments(url, idToken, device, 'đọc nội dung tin nhắn');
+  const documents = await listFirestoreDocuments(session, url, 'đọc nội dung tin nhắn');
   return documents.map((document) => {
     const fields = document?.fields || {};
     const senderUid = firestoreValue(fields, 'sender', '');
