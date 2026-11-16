@@ -510,9 +510,9 @@ test('upload size limits return clear Vietnamese errors and never publish reject
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const post = (form) => originalFetch(`${base}/upload`, { method: 'POST', headers: { 'X-Locket-Client': 'studio', Cookie: cookie }, body: form });
   for (const [field, size, message] of [
-    ['image', 5 * 1024 * 1024 + 1, /Ảnh.*5 MB/],
-    ['image', 11 * 1024 * 1024, /Ảnh.*5 MB/],
-    ['video', 10 * 1024 * 1024 + 1, /Video.*10 MB/],
+    ['image', 20 * 1024 * 1024 + 1, /Ảnh.*20 MB/],
+    ['image', 21 * 1024 * 1024, /Ảnh.*20 MB/],
+    ['video', 20 * 1024 * 1024 + 1, /Video.*20 MB/],
   ]) {
     const form = new FormData();
     form.append(field, new Blob([Buffer.alloc(size)], { type: field === 'image' ? 'image/jpeg' : 'video/mp4' }), field === 'image' ? 'large.jpg' : 'large.mp4');
@@ -524,9 +524,15 @@ test('upload size limits return clear Vietnamese errors and never publish reject
   }
   assert.equal(published, 0);
   const boundary = new FormData();
-  boundary.append('image', new Blob([Buffer.alloc(5 * 1024 * 1024)], { type: 'image/jpeg' }), 'boundary.jpg');
-  boundary.append('video', new Blob([Buffer.alloc(10 * 1024 * 1024)], { type: 'video/mp4' }), 'boundary.mp4');
+  boundary.append('image', new Blob([Buffer.alloc(20 * 1024 * 1024)], { type: 'image/jpeg' }), 'boundary.jpg');
+  boundary.append('video', new Blob([Buffer.alloc(20 * 1024 * 1024)], { type: 'video/mp4' }), 'boundary.mp4');
   const accepted = await post(boundary);
   assert.equal(accepted.status, 200, await accepted.clone().text());
   assert.equal(published, 1);
+  const abovePreviousLimits = new FormData();
+  abovePreviousLimits.append('image', new Blob([Buffer.alloc(6 * 1024 * 1024)], { type: 'image/jpeg' }), 'six-mb.jpg');
+  abovePreviousLimits.append('video', new Blob([Buffer.alloc(11 * 1024 * 1024)], { type: 'video/mp4' }), 'eleven-mb.mp4');
+  const nowAccepted = await post(abovePreviousLimits);
+  assert.equal(nowAccepted.status, 200, await nowAccepted.clone().text());
+  assert.equal(published, 2);
 });

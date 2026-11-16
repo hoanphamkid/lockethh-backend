@@ -9,8 +9,8 @@ module.exports = {
     if (err instanceof multer.MulterError) {
       const tooLarge = err.code === 'LIMIT_FILE_SIZE';
       const sizeMessage = err.field === 'video'
-        ? 'Video vượt dung lượng cho phép. Vui lòng chọn video tối đa 10 MB.'
-        : 'Ảnh vượt dung lượng cho phép. Vui lòng chọn ảnh tối đa 5 MB.';
+        ? 'Video vượt dung lượng cho phép. Vui lòng chọn video tối đa 20 MB.'
+        : 'Ảnh vượt dung lượng cho phép. Vui lòng chọn ảnh tối đa 20 MB.';
       return res.status(tooLarge ? 413 : 400).json({ success: false, message: tooLarge ? sizeMessage : 'Yêu cầu không hợp lệ. Chỉ gửi một ảnh, một video và chú thích tối đa 120 ký tự.' });
     }
     const status = err.status || 500;

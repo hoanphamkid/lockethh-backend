@@ -450,7 +450,7 @@ async function upload(session, buffer, caption = '', audience = {}, video = null
     if (!['jpeg', 'png', 'webp'].includes(metadata.format)) throw new Error('format');
     image = await source.rotate().resize(1020, 1020, { fit: 'cover' }).webp({ quality: 85 }).toBuffer();
   } catch {
-    throw failure('Ảnh không hợp lệ. Hãy chọn ảnh JPEG, PNG hoặc WebP dưới 5 MB.', 400);
+    throw failure('Ảnh không hợp lệ. Hãy chọn ảnh JPEG, PNG hoặc WebP tối đa 20 MB.', 400);
   }
   const idToken = await getAccessToken(session);
   const device = deviceProfile.getDevice(session);

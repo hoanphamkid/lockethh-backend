@@ -6,7 +6,7 @@ const locket = require('../services/locket.service');
 const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 2, fields: 3, fieldSize: 4096, parts: 5 },
+  limits: { fileSize: 20 * 1024 * 1024, files: 2, fields: 3, fieldSize: 4096, parts: 5 },
   fileFilter: (req, file, done) => {
     if (['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'video/x-m4v'].includes(file.mimetype) || file.mimetype.startsWith('video/webm')) return done(null, true);
     done(Object.assign(new Error('Chỉ hỗ trợ ảnh JPEG, PNG, WebP hoặc video MP4/MOV/WebM.'), { status: 400 }));
@@ -21,8 +21,8 @@ router.post('/', requireLocket, rateLimit({
   const image = req.files?.image?.[0];
   const video = req.files?.video?.[0];
   if (!image && !video) return res.status(400).json({ success: false, message: 'Hãy chọn ảnh hoặc video để đăng.' });
-  if (image && image.size > 5 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Ảnh vượt dung lượng cho phép. Vui lòng chọn ảnh tối đa 5 MB.' });
-  if (video && video.size > 10 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Video vượt dung lượng cho phép. Vui lòng chọn video tối đa 10 MB.' });
+  if (image && image.size > 20 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Ảnh vượt dung lượng cho phép. Vui lòng chọn ảnh tối đa 20 MB.' });
+  if (video && video.size > 20 * 1024 * 1024) return res.status(413).json({ success: false, message: 'Video vượt dung lượng cho phép. Vui lòng chọn video tối đa 20 MB.' });
   if (video && !image) return res.status(400).json({ success: false, message: 'Video cần một ảnh xem trước. Hãy chọn lại video từ album.' });
   const caption = req.body.caption ?? '';
   if (typeof caption !== 'string' || caption.length > 120) {
