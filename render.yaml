@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: lockethh-api
+    runtime: node
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        value: https://lockethh.vercel.app
+      - key: CROSS_ORIGIN_COOKIES
+        value: "true"
+      - key: LOCKET_FIREBASE_API_KEY
+        sync: false
+      - key: LOCKET_STORAGE_BUCKET
+        value: locket-img
+      - key: LOCKET_APPCHECK_TOKEN
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
